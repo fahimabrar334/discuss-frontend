@@ -720,6 +720,7 @@
     }
 
     user = name;
+    localStorage.setItem('chatUsername', name);
     stopHorseAmbience();
     playBikeSound();
     document.getElementById('greeting').textContent = 'Welcome, ' + name;
@@ -744,7 +745,20 @@
     }, 2900);
   }
 
+  /* ---------- INSTANT ENTRY (returning user, no landing page / no transition) ---------- */
+  function instantEnterChat(name){
+    user = name;
+    document.getElementById('showName').textContent = name;
+
+    const home = document.getElementById('home');
+    const chat = document.getElementById('chat');
+
+    home.style.display = 'none';
+    chat.classList.add('visible');
+  }
+
   function leaveChat(){
+    localStorage.removeItem('chatUsername');
     location.reload();
   }
 
@@ -786,6 +800,14 @@
   document.getElementById('username').addEventListener('keydown', e=>{
     if(e.key === 'Enter') enterChat();
   });
+
+  /* ---------- ON LOAD: skip landing page if a name is already saved ---------- */
+  (function(){
+    const savedName = localStorage.getItem('chatUsername');
+    if(savedName){
+      instantEnterChat(savedName);
+    }
+  })();
 </script>
 
 </body>
