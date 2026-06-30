@@ -633,49 +633,6 @@
     statusEl.className = 'status offline';
   });
 
-  /* ---------- ambient horse gallop (landing page only) ---------- */
-  let horseCtx = null;
-  let horseTimer = null;
-
-  function hoofbeat(ctx, time){
-    const len = ctx.sampleRate * 0.07;
-    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for(let i=0;i<len;i++){ data[i] = (Math.random()*2-1) * (1 - i/len); }
-    const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 110 + Math.random()*35;
-    filter.Q.value = 1.1;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.45, time);
-    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.13);
-    noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
-    noise.start(time); noise.stop(time + 0.13);
-  }
-
-  function startHorseAmbience(){
-    if(horseTimer) return;
-    try{
-      horseCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const scheduleCycle = () => {
-        const t = horseCtx.currentTime + 0.05;
-        [0, 0.13, 0.27, 0.37].forEach(offset => hoofbeat(horseCtx, t + offset));
-      };
-      scheduleCycle();
-      horseTimer = setInterval(scheduleCycle, 880);
-    }catch(e){ /* audio not available */ }
-  }
-
-  function stopHorseAmbience(){
-    if(horseTimer){ clearInterval(horseTimer); horseTimer = null; }
-    if(horseCtx){ try{ horseCtx.close(); }catch(e){} horseCtx = null; }
-  }
-
-  document.addEventListener('click', startHorseAmbience, { once:true });
-  document.addEventListener('keydown', startHorseAmbience, { once:true });
-
   /* ---------- bike sound for the road transition (synthesized) ---------- */
   function playBikeSound(){
     try{
@@ -721,7 +678,6 @@
 
     user = name;
     localStorage.setItem('chatUsername', name);
-    stopHorseAmbience();
     playBikeSound();
     document.getElementById('greeting').textContent = 'Welcome, ' + name;
     document.getElementById('showName').textContent = name;
