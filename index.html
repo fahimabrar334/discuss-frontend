@@ -444,6 +444,46 @@
   .send input::placeholder{ color:#5d6b7c; }
   .send button{ width:auto; padding:11px 22px; }
 
+  .message-input-wrap{
+    position:relative;
+    flex:1;
+  }
+  .message-input-wrap input{ width:100%; }
+
+  .mention-suggestions{
+    position:absolute;
+    left:0; right:0;
+    bottom:calc(100% + 8px);
+    background:#0e1826;
+    border:1px solid rgba(255,255,255,0.12);
+    border-radius:8px;
+    overflow:hidden;
+    max-height:170px;
+    overflow-y:auto;
+    display:none;
+    z-index:30;
+    box-shadow:0 14px 30px -8px rgba(0,0,0,0.5);
+  }
+  .mention-suggestions.visible{ display:block; }
+  .mention-item{
+    padding:9px 14px;
+    font-size:13.5px;
+    color:#f1ede2;
+    cursor:pointer;
+  }
+  .mention-item.active,
+  .mention-item:hover{ background:var(--surface-soft); }
+
+  .mention{
+    color:var(--accent-deep);
+    font-weight:600;
+    background:rgba(193,154,85,0.18);
+    padding:0 3px;
+    border-radius:4px;
+  }
+  .msg.me .mention{ color:#5a4517; background:rgba(31,23,9,0.14); }
+  .msg.mentioned{ box-shadow:0 0 0 2px var(--accent) inset; }
+
   /* ---------- ambient running horse (above the Group Chat label) ---------- */
   .horse-mini{
     width:60px;
@@ -586,8 +626,10 @@
     <div class="messages" id="messages"></div>
 
     <div class="send">
-      <input id="message" placeholder="Write message"
-        onkeydown="if(event.key==='Enter')send();">
+      <div class="message-input-wrap">
+        <div id="mentionBox" class="mention-suggestions"></div>
+        <input id="message" placeholder="Write message — use @ to mention someone">
+      </div>
       <button onclick="send()">Send</button>
     </div>
   </div>
@@ -617,6 +659,10 @@
   /* ---------- BACKEND CONNECTION ---------- */
   const socket = io("https://discuss-backend-22gf.onrender.com");
   let user = "";
+  const knownUsers = new Set();
+  const originalTitle = document.title;
+  let unreadCount = 0;
+  let titleFlashTimer = null;
 
   const statusEl = document.getElementById('status');
 
@@ -632,6 +678,55 @@
     statusEl.textContent = 'Could not reach server';
     statusEl.className = 'status offline';
   });
+
+  /* ---------- message notifications (browser notification + flashing title) ---------- */
+  let notifyPermissionRequested = false;
+  function ensureNotificationPermission(){
+    if(!('Notification' in window)) return;
+    if(Notification.permission === 'default' && !notifyPermissionRequested){
+      notifyPermissionRequested = true;
+      Notification.requestPermission().catch(()=>{});
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if(!document.hidden){
+      unreadCount = 0;
+      stopTitleFlash();
+    }
+  });
+
+  function startTitleFlash(){
+    if(titleFlashTimer) return;
+    let toggle = false;
+    titleFlashTimer = setInterval(() => {
+      document.title = toggle ? originalTitle : `(${unreadCount}) New message`;
+      toggle = !toggle;
+    }, 1000);
+  }
+
+  function stopTitleFlash(){
+    if(titleFlashTimer){ clearInterval(titleFlashTimer); titleFlashTimer = null; }
+    document.title = originalTitle;
+  }
+
+  function notifyIfNeeded(data, mentionsMe){
+    if(!user || data.user === user) return;
+    if(!document.hidden) return;
+
+    unreadCount++;
+    startTitleFlash();
+
+    if('Notification' in window && Notification.permission === 'granted'){
+      try{
+        const n = new Notification(mentionsMe ? `${data.user} mentioned you` : data.user, {
+          body: data.text,
+          tag: 'group-chat-message'
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+      }catch(e){ /* notifications not available */ }
+    }
+  }
 
   /* ---------- bike sound for the road transition (synthesized) ---------- */
   function playBikeSound(){
@@ -664,7 +759,119 @@
     }catch(e){ /* audio not available, fail silently */ }
   }
 
-  /* ---------- ENTER CHAT (with road-to-sky transition) ---------- */
+  /* ---------- @ mention autocomplete ---------- */
+  const messageInputEl = document.getElementById('message');
+  const mentionBox = document.getElementById('mentionBox');
+  let mentionStart = -1;
+  let currentMentionMatches = [];
+  let activeMentionIndex = -1;
+
+  function trackUser(name){
+    if(name) knownUsers.add(name);
+  }
+
+  function closeMentionBox(){
+    mentionBox.classList.remove('visible');
+    mentionBox.innerHTML = '';
+    currentMentionMatches = [];
+    activeMentionIndex = -1;
+    mentionStart = -1;
+  }
+
+  function renderMentionBox(){
+    mentionBox.innerHTML = currentMentionMatches.map((name, i) =>
+      `<div class="mention-item${i === activeMentionIndex ? ' active' : ''}" data-name="${escapeHtml(name)}">${escapeHtml(name)}</div>`
+    ).join('');
+    mentionBox.classList.add('visible');
+  }
+
+  function updateMentionSuggestions(){
+    const val = messageInputEl.value;
+    const caret = messageInputEl.selectionStart;
+    const uptoCaret = val.slice(0, caret);
+    const atIndex = uptoCaret.lastIndexOf('@');
+
+    if(atIndex === -1){ closeMentionBox(); return; }
+    const afterAt = uptoCaret.slice(atIndex + 1);
+    if(/\s/.test(afterAt)){ closeMentionBox(); return; }
+    const charBefore = atIndex > 0 ? uptoCaret[atIndex - 1] : '';
+    if(charBefore && !/\s/.test(charBefore)){ closeMentionBox(); return; }
+
+    const partial = afterAt.toLowerCase();
+    const candidates = Array.from(knownUsers).filter(u => u !== user && u.toLowerCase().startsWith(partial));
+    if(!candidates.length){ closeMentionBox(); return; }
+
+    mentionStart = atIndex;
+    currentMentionMatches = candidates.slice(0, 6);
+    activeMentionIndex = 0;
+    renderMentionBox();
+  }
+
+  function selectMention(name){
+    const val = messageInputEl.value;
+    const caret = messageInputEl.selectionStart;
+    const before = val.slice(0, mentionStart);
+    const after = val.slice(caret);
+    const inserted = '@' + name + ' ';
+    messageInputEl.value = before + inserted + after;
+    const newCaret = (before + inserted).length;
+    closeMentionBox();
+    messageInputEl.focus();
+    messageInputEl.setSelectionRange(newCaret, newCaret);
+  }
+
+  messageInputEl.addEventListener('input', updateMentionSuggestions);
+
+  messageInputEl.addEventListener('keydown', e => {
+    if(mentionBox.classList.contains('visible') && currentMentionMatches.length){
+      if(e.key === 'ArrowDown'){
+        e.preventDefault();
+        activeMentionIndex = (activeMentionIndex + 1) % currentMentionMatches.length;
+        renderMentionBox();
+        return;
+      }
+      if(e.key === 'ArrowUp'){
+        e.preventDefault();
+        activeMentionIndex = (activeMentionIndex - 1 + currentMentionMatches.length) % currentMentionMatches.length;
+        renderMentionBox();
+        return;
+      }
+      if(e.key === 'Enter' || e.key === 'Tab'){
+        e.preventDefault();
+        selectMention(currentMentionMatches[activeMentionIndex >= 0 ? activeMentionIndex : 0]);
+        return;
+      }
+      if(e.key === 'Escape'){
+        closeMentionBox();
+        return;
+      }
+    }
+    if(e.key === 'Enter') send();
+  });
+
+  mentionBox.addEventListener('mousedown', e => {
+    const item = e.target.closest('.mention-item');
+    if(item){
+      e.preventDefault();
+      selectMention(item.dataset.name);
+    }
+  });
+
+  messageInputEl.addEventListener('blur', () => setTimeout(closeMentionBox, 150));
+
+  function messageMentionsUser(text, name){
+    if(!name) return false;
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('(^|\\s)@' + escapedName + '(?=\\s|$)', 'i');
+    return re.test(text);
+  }
+
+  function formatMessageText(text){
+    const escaped = escapeHtml(text);
+    return escaped.replace(/@([A-Za-z0-9_\-]+)/g, (match, name) => `<span class="mention">@${name}</span>`);
+  }
+
+
   function enterChat(){
     const input = document.getElementById('username');
     const name = input.value.trim();
@@ -678,6 +885,8 @@
 
     user = name;
     localStorage.setItem('chatUsername', name);
+    trackUser(name);
+    ensureNotificationPermission();
     playBikeSound();
     document.getElementById('greeting').textContent = 'Welcome, ' + name;
     document.getElementById('showName').textContent = name;
@@ -704,6 +913,8 @@
   /* ---------- INSTANT ENTRY (returning user, no landing page / no transition) ---------- */
   function instantEnterChat(name){
     user = name;
+    trackUser(name);
+    ensureNotificationPermission();
     document.getElementById('showName').textContent = name;
 
     const home = document.getElementById('home');
@@ -732,10 +943,14 @@
   function addMessage(data){
     const box = document.getElementById('messages');
     const div = document.createElement('div');
-    div.className = 'msg' + (data.user === user ? ' me' : '');
-    div.innerHTML = `<b>${escapeHtml(data.user)}</b>${escapeHtml(data.text)}`;
+    const isMine = data.user === user;
+    const mentionsMe = !isMine && messageMentionsUser(data.text, user);
+    div.className = 'msg' + (isMine ? ' me' : '') + (mentionsMe ? ' mentioned' : '');
+    div.innerHTML = `<b>${escapeHtml(data.user)}</b>${formatMessageText(data.text)}`;
     box.appendChild(div);
     box.scrollTop = box.scrollHeight;
+    trackUser(data.user);
+    notifyIfNeeded(data, mentionsMe);
   }
 
   function escapeHtml(str){
